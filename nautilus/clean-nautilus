@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""
+A Files (Nautilus) script for `clean`. Right-click a folder, then Scripts >
+clean > "Find duplicates here" (or "Find empty folders here", or "Where the
+space goes"): the dashboard opens on a new scan with the selected folders
+filled in (the open folder if nothing is selected). Nothing starts until you
+press Start.
+
+If a dashboard is running it is used; otherwise one is started in a terminal
+window, which stops it when closed. `install.sh --nautilus` links this file
+into ~/.local/share/nautilus/scripts/clean/ under those three names, and
+`install.sh uninstall --nautilus` takes the links out again.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import urllib.parse
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+CLEAN = os.path.join(os.path.dirname(HERE), "clean")
+
+# Which scan, by the words in the name it was started under.
+KINDS = (("duplicate", "dupes"), ("empty", "empty"), ("space", "space"))
+
+# How each terminal is told to run a command (the first one found is used).
+TERMINALS = (("x-terminal-emulator", "-e"), ("gnome-terminal", "--"), ("kgx", "--"),
+             ("ptyxis", "--"), ("konsole", "-e"), ("xfce4-terminal", "-x"),
+             ("xterm", "-e"))
+
+# Run in the terminal: keep the window open if the dashboard couldn't start,
+# so the reason can be read.
+HOLD = '"$@" || { printf "\\nPress Enter to close this window. "; read answer; }'
+
+
+def kind():
+    name = os.path.basename(sys.argv[0]).lower()
+    for word, k in KINDS:
+        if word in name:
+            return k
+    return "dupes"
+
+
+def local(item, cwd):
+    """The local path for something Files passed: a name relative to the open
+    folder, a full path, or a URI (None if it isn't on this computer)."""
+    if "://" in item:                   # a name can't hold "/", so this is a URI
+        parts = urllib.parse.urlsplit(item)
+        if parts.scheme != "file" or parts.netloc not in ("", "localhost"):
+            return None
+        return os.fsdecode(urllib.parse.unquote_to_bytes(parts.path))
+    return os.path.normpath(os.path.join(cwd, item))
+
+
+def folders(argv, env, cwd):
+    """The folders to scan: those selected (a selected file counts as its
+    folder), else the open folder. None if they aren't on this computer."""
+    out = []
+    for item in argv:
+        path = local(item, cwd)
+        if path is None:
+            return None
+        if not os.path.isdir(path):
+            path = os.path.dirname(path)
+        if path not in out:
+            out.append(path)
+    if out:
+        return out
+    uri = env.get("NAUTILUS_SCRIPT_CURRENT_URI")
+    path = local(uri, cwd) if uri else cwd
+    return [path] if path else None
+
+
+def tell(text):
+    """Show `text` on the desktop (Files shows nothing a script prints)."""
+    for cmd in (["notify-send", "--app-name=clean", "clean", text],
+                ["zenity", "--error", "--title=clean", "--no-markup", f"--text={text}"]):
+        if shutil.which(cmd[0]):
+            try:
+                subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=30)
+                return
+            except (OSError, subprocess.SubprocessError):
+                pass
+    print(text, file=sys.stderr)
+
+
+def terminal():
+    for name, flag in TERMINALS:
+        path = shutil.which(name)
+        if path:
+            return [path, flag]
+    return None
+
+
+def main():
+    found = folders(sys.argv[1:], os.environ, os.getcwd())
+    if not found:
+        tell("This works on folders on this computer only.")
+        return 1
+    cmd = [CLEAN, "ui", "--scan", kind(), "--", *found]
+    try:
+        r = subprocess.run(cmd[:2] + ["--if-running"] + cmd[2:], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        tell(f"Couldn't run {CLEAN}: {e}")
+        return 1
+    if r.returncode == 0:
+        return 0
+    if r.returncode != 1:               # 1: no dashboard is running yet
+        tell(r.stderr.decode(errors="replace").strip() or f"clean ui failed ({r.returncode})")
+        return 1
+    term = terminal()
+    if term is None:
+        tell("No terminal program found to run the dashboard in. "
+             "Start it with `clean ui` in a terminal, then try again.")
+        return 1
+    try:
+        subprocess.Popen([*term, "sh", "-c", HOLD, "sh", *cmd], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except OSError as e:
+        tell(f"Couldn't start {term[0]}: {e}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""clean: safe cleanup for big drives. The code is in the cleanup/ package
+next to this file; run `clean --help` or see README.md."""
+
+import os
+import sys
+
+sys.dont_write_bytecode = True  # keep the tool folder free of __pycache__
+# Find the package next to the real file, even when run through a symlink.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import cleanup  # noqa: E402
+
+if __name__ == "__main__":
+    cleanup.exit_if_unsupported()       # (Linux, Python 3.10+) before the rest loads
+    from cleanup.cli import main
+    sys.exit(main())
